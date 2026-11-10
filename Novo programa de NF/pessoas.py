@@ -165,4 +165,4 @@ def preencher_pessoas(
 def avancar_pessoas(pagina: Page) -> None:
     expect(pagina.locator("#DataCompetencia")).to_be_visible()
     pagina.locator("#btnAvancar").click()
-    expect(pagina.locator("#ServicoPrestado_CodigoTributacaoNacional")).to_be_attached()
+    pagina.locator("#ServicoPrestado_Descricao").wait_for(state="visible", timeout=15000)

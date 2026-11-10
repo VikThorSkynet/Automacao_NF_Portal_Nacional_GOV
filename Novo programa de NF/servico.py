@@ -30,7 +30,7 @@ def ler_descricao_servico(caminho_excel: Path) -> str:
 
 
 def selecionar_resultado(
-    pagina: Page, seletor: str, busca: str, texto: re.Pattern[str]
+    pagina: Page, seletor: str, busca: str, texto: re.Pattern[str], *, nativo: bool = False
 ) -> None:
     campo = pagina.locator(seletor)
     campo.wait_for(state="attached")
@@ -39,8 +39,11 @@ def selecionar_resultado(
         return
 
     try:
-        escolher_opcao(pagina, seletor, busca, texto)
-        expect(selecionado).to_have_count(1)
+        if nativo:
+            selecionar_opcao_nativa(pagina, seletor, texto)
+        else:
+            escolher_opcao(pagina, seletor, busca, texto)
+        expect(selecionado).to_have_count(1, timeout=TEMPO_LISTA_MS)
     except (Error, AssertionError) as erro:
         raise RuntimeError(
             f"O portal não confirmou a opção {busca} em {seletor}. "
@@ -82,32 +85,45 @@ def escolher_opcao(pagina: Page, seletor: str, busca: str, texto: re.Pattern[str
         campo.select_option(label=opcao.text_content().strip(), timeout=TEMPO_LISTA_MS)
 
 
-def selecionar_nbs(pagina: Page) -> None:
-    campo = pagina.locator("#ServicoPrestado_CodigoNBS")
-    texto = re.compile(rf"^\s*{CODIGO_NBS}\s*-")
+def selecionar_opcao_nativa(pagina: Page, seletor: str, texto: re.Pattern[str]) -> None:
+    # O menu Chosen pode fechar enquanto o portal atualiza uma lista dependente.
+    campo = pagina.locator(seletor)
     opcao = campo.locator("option:enabled").filter(has_text=texto)
     expect(campo).to_be_enabled(timeout=TEMPO_LISTA_MS)
     expect(opcao).to_have_count(1, timeout=TEMPO_LISTA_MS)
-    campo.select_option(label=opcao.text_content().strip(), force=True)
-    expect(campo.locator("option:checked")).to_have_text(texto)
+    campo.select_option(label=opcao.text_content().strip(), force=True, timeout=TEMPO_LISTA_MS)
 
-    menu = pagina.locator("#ServicoPrestado_CodigoNBS + .chosen-container .chosen-single")
+    menu = pagina.locator(f"{seletor} + .chosen-container .chosen-single")
     if menu.is_visible():
         campo.evaluate("el => window.jQuery(el).trigger('chosen:updated')")
-        expect(menu).to_have_text(texto)
+        # A confirmação é feita na opção do formulário, que o portal envia.
+        # O texto do menu pode ter uma apresentação diferente da opção.
 
 
-def preencher_servico(pagina: Page, descricao: str) -> None:
+def preencher_servico(pagina: Page, descricao: str, informar=None) -> None:
+    if informar:
+        informar("Selecionando município de prestação.")
     selecionar_resultado(
         pagina, CAMPO_MUNICIPIO, MUNICIPIO, re.compile(r"^\s*Lagoa Santa\s*/\s*MG\s*$")
     )
+    if informar:
+        informar("Selecionando código de tributação e incidência de ISSQN.")
     selecionar_resultado(pagina, CAMPO_TRIBUTACAO, CODIGO_TRIBUTACAO, OPCAO_TRIBUTACAO)
     marcar_opcao(pagina, "ServicoPrestado.HaExportacaoImunidadeNaoIncidencia", "Não")
-    selecionar_nbs(pagina)
+    if informar:
+        informar(f"Selecionando NBS {CODIGO_NBS}.")
+    selecionar_resultado(
+        pagina, "#ServicoPrestado_CodigoNBS", CODIGO_NBS,
+        re.compile(rf"^\s*{CODIGO_NBS}\s*-"), nativo=True,
+    )
+    if informar:
+        informar(f"Selecionando indicador da operação {CODIGO_INDICADOR}.")
     selecionar_resultado(
         pagina, "#ServicoPrestado_CodigoIndOp", CODIGO_INDICADOR,
-        re.compile(r"^\s*100301\s*-"),
+        re.compile(rf"^\s*{CODIGO_INDICADOR}\s*-"), nativo=True,
     )
+    if informar:
+        informar("Preenchendo a descrição de G2.")
     campo_descricao = pagina.locator(CAMPO_DESCRICAO)
     campo_descricao.fill(descricao)
     expect(campo_descricao).to_have_value(descricao.replace("\r\n", "\n").replace("\r", "\n"))
