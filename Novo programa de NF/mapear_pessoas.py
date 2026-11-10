@@ -1,15 +1,18 @@
 import json
-import re
+import logging
 from importlib import reload
 from pathlib import Path
+from threading import Event
 from tkinter import Tk, filedialog
 
-from playwright.sync_api import Error, expect, sync_playwright
+from playwright.sync_api import Error, sync_playwright
 
 import pessoas
 import servico
 import valores
+from lote import Lote, PararLote
 from planilha import ler_intervalo
+from registro import Registro
 
 
 PORTAL_NFSE = "https://www.nfse.gov.br/EmissorNacional/"
@@ -93,6 +96,7 @@ def main():
         return
     print(f"Planilha selecionada: {caminho_excel.name}", flush=True)
     intervalo = ler_intervalo(caminho_excel)
+    registro = Registro(caminho_excel)
     print(f"Linhas configuradas no Excel: {intervalo.start} a {intervalo.stop - 1}.", flush=True)
     with sync_playwright() as playwright:
         navegador = playwright.chromium.launch(channel="chrome", headless=False, slow_mo=650)
@@ -128,30 +132,37 @@ def main():
                     aceitar_cnpj = comando.startswith(("teste-cnpj ", "teste-cnpj-apos-data "))
                     if aceitar_cnpj and len(intervalo) != 1:
                         raise ValueError("O teste com CNPJ requer uma única linha em G13.")
+                    _, dados = registro.ler_linha(linha, lambda aba: None)
                     testar_ate_emissao(
                         pagina, caminho_excel, linha,
                         apos_data=comando.startswith(("teste-apos-data ", "teste-cnpj-apos-data ")),
                         aceitar_cnpj=aceitar_cnpj,
                     )
                     linha_em_teste = linha
-                    emissao_preparada = (pagina, linha)
+                    emissao_preparada = (pagina, linha, dados)
                 elif comando.startswith("emitir "):
                     linha = int(comando.split(maxsplit=1)[1])
                     if emissao_tentada:
                         raise ValueError("Já houve uma tentativa. Confira o resultado no portal antes de repetir.")
                     if intervalo != range(linha, linha + 1) or ler_intervalo(caminho_excel) != intervalo:
                         raise ValueError("A emissão deste teste exige G10 na linha escolhida e G13 igual a 1.")
-                    if emissao_preparada != (pagina, linha):
+                    if emissao_preparada is None or emissao_preparada[:2] != (pagina, linha):
                         raise ValueError("Prepare a linha nesta mesma aba antes de emitir.")
-                    botao = pagina.get_by_role("button", name=re.compile(r"^Emitir NFS-e$", re.IGNORECASE))
-                    expect(botao).to_be_enabled()
-                    emissao_tentada = True
-                    botao.click(timeout=15000)
-                    print("Clique em Emitir NFS-e enviado. Conferindo o resultado no portal.", flush=True)
-                    expect(pagina.get_by_text("Nova NFS-e", exact=True).filter(visible=True).first).to_be_visible(
-                        timeout=15000
+
+                    def parar_para_conferencia():
+                        raise PararLote("Confira a pendência no portal ou abra a interface para retomar.")
+
+                    operacao = Lote(
+                        pagina, caminho_excel,
+                        lambda evento: print(evento["mensagem"], flush=True),
+                        parar_para_conferencia, Event(), logging.getLogger("nfse.depuracao"),
                     )
-                    print("Tela de resultado aberta. Confira o identificador da nota.", flush=True)
+                    operacao.linha = linha
+                    with registro.exclusivo():
+                        if registro.ler_pendente() is not None:
+                            raise ValueError("Já existe uma emissão pendente. Confira antes de emitir.")
+                        emissao_tentada = True
+                        operacao.enviar_nota(emissao_preparada[2])
                 elif comando.startswith(("pessoas ", "apos-data ")):
                     emissao_preparada = None
                     linha = int(comando.split(maxsplit=1)[1])
@@ -193,7 +204,7 @@ def main():
                     print(f"Valores da linha {linha} preenchidos. Confira antes de Avançar.", flush=True)
                 elif not comando:
                     print(json.dumps(listar_campos(pagina), ensure_ascii=False, indent=2), flush=True)
-            except (Error, RuntimeError, AssertionError, ValueError) as erro:
+            except (Error, RuntimeError, AssertionError, ValueError, OSError, PararLote) as erro:
                 print(f"Preenchimento interrompido: {str(erro).splitlines()[0]}", flush=True)
                 if not pagina.is_closed():
                     aviso = pagina.locator(".jconfirm.jconfirm-open .jconfirm-content").first

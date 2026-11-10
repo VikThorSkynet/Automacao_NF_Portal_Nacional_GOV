@@ -52,20 +52,34 @@ def preencher_decimal(campo: Locator, valor: Decimal, casas: int = 2) -> None:
     expect(campo).to_have_value(esperado)
 
 
-def preencher_valores(pagina: Page, valor: Decimal, aliquota: Decimal) -> None:
+def preencher_valores(pagina: Page, valor: Decimal, aliquota: Decimal, informar=None) -> None:
+    if informar:
+        informar("Preenchendo o valor do serviço e as opções de ISSQN.")
     preencher_decimal(pagina.locator(CAMPO_VALOR), valor)
     marcar_opcao(pagina, "ISSQN.HaSuspensao", "Não")
     marcar_opcao(pagina, "ISSQN.HaRetencao", "Não")
     marcar_opcao(pagina, "ISSQN.HaBeneficioMunicipal", "Não")
 
+    if informar:
+        informar("Selecionando os códigos federais e de IBS/CBS.")
     for seletor, codigo in (
         ("#TributacaoFederal_PISCofins_SituacaoTributaria", "00"),
         ("#TributacaoFederal_PISCofins_TipoRetencao", "0"),
         ("#ValorTributos_CodigoSituacaoTributaria", "000"),
-        ("#ValorTributos_CodigoClassificacaoTributaria", "000001"),
     ):
         selecionar_resultado(pagina, seletor, codigo, re.compile(rf"^\s*{codigo}\s*-"))
 
+    if informar:
+        informar("Selecionando classificação tributária de IBS/CBS 000001.")
+    # A mudança do CST recria a lista de classificação de forma assíncrona.
+    pagina.wait_for_timeout(1000)
+    selecionar_resultado(
+        pagina, "#ValorTributos_CodigoClassificacaoTributaria", "000001",
+        re.compile(r"^\s*000001\s*-"),
+    )
+
+    if informar:
+        informar("Preenchendo a alíquota de G4.")
     marcar_opcao(pagina, "ValorTributos.TipoValorTributos", "Informar alíquota do Simples Nacional")
     casas_aliquota = max(2, -aliquota.normalize().as_tuple().exponent)
     preencher_decimal(pagina.locator(CAMPO_ALIQUOTA_SN), aliquota, casas_aliquota)
